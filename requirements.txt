@@ -5,3 +5,6 @@ Pillow
 pyaudio
 PySide6
 python-dotenv
+onnxruntime
+numpy
+requests

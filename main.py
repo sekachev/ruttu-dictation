@@ -2,6 +2,7 @@ import sys
 import threading
 import pystray
 import pyaudio
+import time
 from PIL import Image, ImageDraw
 import os
 from PySide6.QtWidgets import QApplication
@@ -12,6 +13,7 @@ from Mac.ui.settings_window import SettingsWindow
 from Mac.engine.audio import AudioStreamer
 from Mac.engine.transcriber import DeepgramTranscriber
 from Mac.engine.typist import MacTypist
+from Mac.engine.vad import SileroVAD
 
 class RuttuApp:
     def __init__(self):
@@ -19,6 +21,7 @@ class RuttuApp:
         self.processor = TextProcessor(self.config)
         self.typist = MacTypist()
         self.audio = AudioStreamer()
+        self.vad = None
         
         self.qt_app = QApplication(sys.argv)
         self.qt_app.setQuitOnLastWindowClosed(False)
@@ -28,7 +31,9 @@ class RuttuApp:
         self.settings_window = None
         self.transcriber = None
         
-        self.last_text_len = 0
+        self.last_speech_time = 0
+        self.connection_timeout = 10.0 # seconds of silence before closing connection
+        self.is_connected = False
 
     def create_icon_image(self, color):
         width, height = 64, 64
@@ -49,21 +54,45 @@ class RuttuApp:
         processed = self.processor.process_segment(text, is_final)
         if processed:
             print(f"[LIVE] {processed} (final={is_final})")
-            
-            # Simple differential typing for demonstration
-            # In a real app, we'd handle interim results more carefully
             if is_final:
                 self.typist.type_text(processed + " ")
-                self.last_text_len = 0
-            else:
-                # For interim, we'll just print to console for now
-                # Real differential typing on Mac is tricky with pynput 
-                # but we can implement it later.
-                pass
+
+    def start_transcriber(self):
+        if not self.transcriber:
+            print("[INFO] Reconnecting to Deepgram...")
+            self.transcriber = DeepgramTranscriber(
+                self.config.get("api_key"), 
+                self.config, 
+                self.on_transcription
+            )
+            self.transcriber.start()
+            self.is_connected = True
+
+    def stop_transcriber(self):
+        if self.transcriber:
+            print("[INFO] Silence detected. Closing Deepgram connection to save credits.")
+            self.transcriber.stop()
+            self.transcriber = None
+            self.is_connected = False
 
     def audio_callback(self, in_data, frame_count, time_info, status):
-        if self.recording_active and self.transcriber:
-            self.transcriber.send_audio(in_data)
+        if not self.recording_active:
+            return (None, pyaudio.paContinue)
+            
+        # 1. Run VAD
+        if self.vad and self.vad.is_speech(in_data):
+            self.last_speech_time = time.time()
+            if not self.is_connected:
+                # Use a thread to avoid blocking audio stream
+                threading.Thread(target=self.start_transcriber, daemon=True).start()
+            
+            if self.is_connected and self.transcriber:
+                self.transcriber.send_audio(in_data)
+        else:
+            # 2. Handle silence timeout
+            if self.is_connected and (time.time() - self.last_speech_time > self.connection_timeout):
+                self.stop_transcriber()
+                
         return (None, pyaudio.paContinue)
 
     def toggle_dictation(self):
@@ -77,26 +106,18 @@ class RuttuApp:
         self.icon.icon = self.create_icon_image(color)
         
         if self.recording_active:
-            try:
-                self.transcriber = DeepgramTranscriber(
-                    self.config.get("api_key"), 
-                    self.config, 
-                    self.on_transcription
-                )
-                self.transcriber.start()
-                self.audio.start(self.audio_callback)
-                print("[INFO] Dictation started")
-            except Exception as e:
-                print(f"[ERROR] Failed to start transcriber: {e}")
-                self.toggle_dictation()
+            print("[INFO] App active. VAD monitoring started.")
+            if not self.vad:
+                self.vad = SileroVAD()
+            self.audio.start(self.audio_callback)
         else:
             self.audio.stop()
-            if self.transcriber:
-                self.transcriber.stop()
-            print("[INFO] Dictation stopped")
+            self.stop_transcriber()
+            print("[INFO] Dictation fully stopped")
 
     def on_exit(self):
         self.audio.stop()
+        self.stop_transcriber()
         if self.icon: self.icon.stop()
         self.qt_app.quit()
         sys.exit(0)
