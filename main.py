@@ -50,6 +50,17 @@ class RuttuApp:
         self.settings_window.raise_()
         self.settings_window.activateWindow()
 
+    def update_icon(self):
+        if not self.recording_active:
+            color = "#555555" # Gray - Inactive
+        elif self.is_connected:
+            color = "#FF4444" # Red - Transcribing (Deepgram Active)
+        else:
+            color = "#FFD700" # Yellow - Listening (VAD Active, Deepgram Idle)
+            
+        if self.icon:
+            self.icon.icon = self.create_icon_image(color)
+
     def on_transcription(self, text, is_final):
         processed = self.processor.process_segment(text, is_final)
         if processed:
@@ -67,6 +78,7 @@ class RuttuApp:
             )
             self.transcriber.start()
             self.is_connected = True
+            self.update_icon()
 
     def stop_transcriber(self):
         if self.transcriber:
@@ -74,22 +86,20 @@ class RuttuApp:
             self.transcriber.stop()
             self.transcriber = None
             self.is_connected = False
+            self.update_icon()
 
     def audio_callback(self, in_data, frame_count, time_info, status):
         if not self.recording_active:
             return (None, pyaudio.paContinue)
             
-        # 1. Run VAD
         if self.vad and self.vad.is_speech(in_data):
             self.last_speech_time = time.time()
             if not self.is_connected:
-                # Use a thread to avoid blocking audio stream
                 threading.Thread(target=self.start_transcriber, daemon=True).start()
             
             if self.is_connected and self.transcriber:
                 self.transcriber.send_audio(in_data)
         else:
-            # 2. Handle silence timeout
             if self.is_connected and (time.time() - self.last_speech_time > self.connection_timeout):
                 self.stop_transcriber()
                 
@@ -102,18 +112,17 @@ class RuttuApp:
             return
 
         self.recording_active = not self.recording_active
-        color = "#FF4444" if self.recording_active else "#555555"
-        self.icon.icon = self.create_icon_image(color)
+        self.update_icon()
         
         if self.recording_active:
-            print("[INFO] App active. VAD monitoring started.")
+            print("[INFO] App active. VAD monitoring started (Status: YELLOW).")
             if not self.vad:
                 self.vad = SileroVAD()
             self.audio.start(self.audio_callback)
         else:
             self.audio.stop()
             self.stop_transcriber()
-            print("[INFO] Dictation fully stopped")
+            print("[INFO] Dictation fully stopped (Status: GRAY)")
 
     def on_exit(self):
         self.audio.stop()
