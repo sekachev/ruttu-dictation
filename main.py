@@ -15,6 +15,8 @@ from Mac.engine.transcriber import DeepgramTranscriber
 from Mac.engine.typist import MacTypist
 from Mac.engine.vad import SileroVAD
 
+from collections import deque
+
 class RuttuApp:
     def __init__(self):
         self.config = ConfigManager(os.path.join(os.path.dirname(__file__), "config.json"))
@@ -32,8 +34,13 @@ class RuttuApp:
         self.transcriber = None
         
         self.last_speech_time = 0
-        self.connection_timeout = 10.0 # seconds of silence before closing connection
+        self.connection_timeout = 7.0 # seconds of silence before closing
         self.is_connected = False
+        
+        # Pre-roll buffer: store ~1 second of audio (16000 samples/sec)
+        # Using 4096 chunks, 4 chunks is approx 1 second
+        self.pre_roll = deque(maxlen=4)
+        self.pending_audio = [] # Audio captured while connecting
 
     def create_icon_image(self, color):
         width, height = 64, 64
@@ -52,11 +59,11 @@ class RuttuApp:
 
     def update_icon(self):
         if not self.recording_active:
-            color = "#555555" # Gray - Inactive
+            color = "#555555" # Gray
         elif self.is_connected:
-            color = "#FF4444" # Red - Transcribing (Deepgram Active)
+            color = "#FF4444" # Red
         else:
-            color = "#FFD700" # Yellow - Listening (VAD Active, Deepgram Idle)
+            color = "#FFD700" # Yellow
             
         if self.icon:
             self.icon.icon = self.create_icon_image(color)
@@ -70,36 +77,57 @@ class RuttuApp:
 
     def start_transcriber(self):
         if not self.transcriber:
-            print("[INFO] Reconnecting to Deepgram...")
+            print("[INFO] VAD Triggered! Connecting to Deepgram with pre-roll...")
             self.transcriber = DeepgramTranscriber(
                 self.config.get("api_key"), 
                 self.config, 
                 self.on_transcription
             )
             self.transcriber.start()
+            
+            # 1. Send pre-roll buffer (the silence/start before VAD)
+            for chunk in self.pre_roll:
+                self.transcriber.send_audio(chunk)
+            
+            # 2. Send audio that was captured while we were opening the socket
+            for chunk in self.pending_audio:
+                self.transcriber.send_audio(chunk)
+            self.pending_audio = []
+            
             self.is_connected = True
             self.update_icon()
 
     def stop_transcriber(self):
         if self.transcriber:
-            print("[INFO] Silence detected. Closing Deepgram connection to save credits.")
+            print("[INFO] Silence detected. Closing connection.")
             self.transcriber.stop()
             self.transcriber = None
             self.is_connected = False
+            self.pending_audio = []
             self.update_icon()
 
     def audio_callback(self, in_data, frame_count, time_info, status):
         if not self.recording_active:
             return (None, pyaudio.paContinue)
             
-        if self.vad and self.vad.is_speech(in_data):
+        is_speech = self.vad and self.vad.is_speech(in_data)
+        
+        if is_speech:
             self.last_speech_time = time.time()
             if not self.is_connected:
-                threading.Thread(target=self.start_transcriber, daemon=True).start()
+                # Store audio while connecting
+                self.pending_audio.append(in_data)
+                # Only start connection thread once
+                if len(self.pending_audio) == 1:
+                    threading.Thread(target=self.start_transcriber, daemon=True).start()
             
             if self.is_connected and self.transcriber:
                 self.transcriber.send_audio(in_data)
         else:
+            # Still record to pre-roll if not speaking
+            self.pre_roll.append(in_data)
+            
+            # Handle timeout
             if self.is_connected and (time.time() - self.last_speech_time > self.connection_timeout):
                 self.stop_transcriber()
                 
