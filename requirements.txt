@@ -1,0 +1,7 @@
+deepgram-sdk
+pynput
+pystray
+Pillow
+pyaudio
+PySide6
+python-dotenv
