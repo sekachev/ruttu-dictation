@@ -159,10 +159,31 @@ class RuttuApp:
         self.qt_app.quit()
         sys.exit(0)
 
+    def set_language(self, lang):
+        def inner():
+            self.config.set("language", lang)
+            print(f"[INFO] Language changed to: {lang}")
+            # If we are currently connected, we might want to restart to apply immediately
+            if self.is_connected:
+                self.stop_transcriber()
+                # Transcriber will restart on next speech detection with new lang
+        return inner
+
     def run(self):
+        # Create Language Submenu
+        lang_menu = pystray.Menu(
+            pystray.MenuItem("🇪🇪 Estonian", self.set_language("ee"), 
+                             checked=lambda item: self.config.get("language") == "ee", radio=True),
+            pystray.MenuItem("🇷🇺 Russian", self.set_language("ru"), 
+                             checked=lambda item: self.config.get("language") == "ru", radio=True),
+            pystray.MenuItem("🇬🇧 English", self.set_language("en"), 
+                             checked=lambda item: self.config.get("language") == "en", radio=True),
+        )
+
         menu = pystray.Menu(
             pystray.MenuItem("Toggle Dictation", self.toggle_dictation, default=True),
-            pystray.MenuItem("Settings", self.on_settings),
+            pystray.MenuItem("Language", lang_menu),
+            pystray.MenuItem("Settings...", self.on_settings),
             pystray.Separator(),
             pystray.MenuItem("Exit ruttu.ee", self.on_exit)
         )
