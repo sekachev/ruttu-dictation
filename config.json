@@ -13,5 +13,9 @@
         "новый список": "",
         "точка": ".",
         "запятая": ","
-    }
+    },
+    "transcription_engine": "deepgram",
+    "whisper_host": "localhost",
+    "whisper_port": 9090,
+    "whisper_model": "small"
 }
