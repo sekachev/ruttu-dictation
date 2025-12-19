@@ -5,6 +5,6 @@ Pillow
 pyaudio
 PySide6
 python-dotenv
-onnxruntime
+silero-vad
 numpy
 requests

@@ -1,24 +1,17 @@
 import numpy as np
-import onnxruntime as ort
-import os
-from Mac.utils.downloader import download_silero_vad
+import torch
+from silero_vad import load_silero_vad
 
 class SileroVAD:
     def __init__(self, threshold=0.5, sample_rate=16000):
-        model_path = download_silero_vad()
-        
-        # Disable logging for ONNX
-        options = ort.SessionOptions()
-        options.log_severity_level = 3
-        
-        self.session = ort.InferenceSession(model_path, options, providers=['CPUExecutionProvider'])
         self.threshold = threshold
         self.sample_rate = sample_rate
         
-        # State for the model (RNN states)
-        self.h = np.zeros((2, 1, 64)).astype('float32')
-        self.c = np.zeros((2, 1, 64)).astype('float32')
-        self.sr = np.array([sample_rate], dtype=np.int64)
+        # Load the Silero VAD model
+        self.model = load_silero_vad()
+        
+        # Set torch to use single thread for better performance
+        torch.set_num_threads(1)
 
     def is_speech(self, audio_chunk):
         """
@@ -33,21 +26,23 @@ class SileroVAD:
             
         audio_float32 = audio_int16.astype('float32') / 32768.
         
-        # Prepare input
-        # Silero expects chunk size of 512, 1024 or 1536 samples for 16kHz
-        # If chunk is different, we might need to pad or handle it
         if len(audio_float32) == 0:
             return False
 
-        input_data = {
-            'input': audio_float32.reshape(1, -1),
-            'h': self.h,
-            'c': self.c,
-            'sr': self.sr
-        }
+        # Silero VAD expects exactly 512 samples for 16kHz
+        # If we have more samples, take the first 512
+        expected_samples = 512
+        if len(audio_float32) >= expected_samples:
+            audio_float32 = audio_float32[:expected_samples]
+        else:
+            # If we have fewer samples, pad with zeros
+            audio_float32 = np.pad(audio_float32, (0, expected_samples - len(audio_float32)), 'constant')
         
-        out, h, c = self.session.run(None, input_data)
-        self.h, self.c = h, c
+        # Convert to torch tensor and add batch dimension
+        audio_tensor = torch.from_numpy(audio_float32).unsqueeze(0)
         
-        prob = out[0][0]
-        return prob >= self.threshold
+        # Get speech probability from Silero VAD
+        with torch.no_grad():
+            speech_prob = self.model(audio_tensor, self.sample_rate).item()
+        
+        return speech_prob >= self.threshold

@@ -7,13 +7,13 @@ from PIL import Image, ImageDraw
 import os
 from PySide6.QtWidgets import QApplication
 
-from Mac.utils.config import ConfigManager
-from Mac.utils.filters import TextProcessor
-from Mac.ui.settings_window import SettingsWindow
-from Mac.engine.audio import AudioStreamer
-from Mac.engine.transcriber import DeepgramTranscriber
-from Mac.engine.typist import MacTypist
-from Mac.engine.vad import SileroVAD
+from utils.config import ConfigManager
+from utils.filters import TextProcessor
+from ui.settings_window import SettingsWindow
+from engine.audio import AudioStreamer
+from engine.transcriber import DeepgramTranscriber
+from engine.typist import MacTypist
+from engine.vad import SileroVAD
 
 from collections import deque
 
@@ -184,7 +184,7 @@ class RuttuApp:
             pystray.MenuItem("Toggle Dictation", self.toggle_dictation, default=True),
             pystray.MenuItem("Language", lang_menu),
             pystray.MenuItem("Settings...", self.on_settings),
-            pystray.Separator(),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Exit ruttu.ee", self.on_exit)
         )
         
