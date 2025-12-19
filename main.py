@@ -12,6 +12,7 @@ from utils.filters import TextProcessor
 from ui.settings_window import SettingsWindow
 from engine.audio import AudioStreamer
 from engine.transcriber import DeepgramTranscriber
+from engine.whisper_live_transcriber import WhisperLiveTranscriber
 from engine.typist import MacTypist
 from engine.vad import SileroVAD
 
@@ -34,13 +35,11 @@ class RuttuApp:
         self.transcriber = None
         
         self.last_speech_time = 0
-        self.connection_timeout = 7.0 # seconds of silence before closing
+        self.connection_timeout = 7.0
         self.is_connected = False
         
-        # Pre-roll buffer: store ~1 second of audio (16000 samples/sec)
-        # Using 4096 chunks, 4 chunks is approx 1 second
         self.pre_roll = deque(maxlen=4)
-        self.pending_audio = [] # Audio captured while connecting
+        self.pending_audio = []
 
     def create_icon_image(self, color):
         width, height = 64, 64
@@ -59,11 +58,11 @@ class RuttuApp:
 
     def update_icon(self):
         if not self.recording_active:
-            color = "#555555" # Gray
+            color = "#555555"
         elif self.is_connected:
-            color = "#FF4444" # Red
+            color = "#FF4444"
         else:
-            color = "#FFD700" # Yellow
+            color = "#FFD700"
             
         if self.icon:
             self.icon.icon = self.create_icon_image(color)
@@ -77,25 +76,39 @@ class RuttuApp:
 
     def start_transcriber(self):
         if not self.transcriber:
-            print("[INFO] VAD Triggered! Connecting to Deepgram with pre-roll...")
-            self.transcriber = DeepgramTranscriber(
-                self.config.get("api_key"), 
-                self.config, 
-                self.on_transcription
-            )
-            self.transcriber.start()
-            
-            # 1. Send pre-roll buffer (the silence/start before VAD)
-            for chunk in self.pre_roll:
-                self.transcriber.send_audio(chunk)
-            
-            # 2. Send audio that was captured while we were opening the socket
-            for chunk in self.pending_audio:
-                self.transcriber.send_audio(chunk)
-            self.pending_audio = []
-            
-            self.is_connected = True
-            self.update_icon()
+            engine = self.config.get("transcription_engine", "deepgram")
+            print(f"[INFO] VAD Triggered! Connecting to {engine}...")
+
+            if engine == "deepgram":
+                self.transcriber = DeepgramTranscriber(
+                    self.config.get("api_key"),
+                    self.config,
+                    self.on_transcription
+                )
+            elif engine == "whisper_live":
+                self.transcriber = WhisperLiveTranscriber(
+                    self.config.get("whisper_host", "localhost"),
+                    self.config.get("whisper_port", 9090),
+                    self.config,
+                    self.on_transcription
+                )
+
+            if self.transcriber:
+                self.transcriber.start()
+                if self.transcriber.connection_ready.wait(timeout=5):
+                    print(f"[INFO] Connection to {engine} established.")
+                    self.is_connected = True
+                    self.update_icon()
+
+                    for chunk in self.pre_roll:
+                        self.transcriber.send_audio(chunk)
+
+                    for chunk in self.pending_audio:
+                        self.transcriber.send_audio(chunk)
+                    self.pending_audio = []
+                else:
+                    print(f"[ERROR] Connection to {engine} timed out.")
+                    self.stop_transcriber()
 
     def stop_transcriber(self):
         if self.transcriber:
@@ -114,27 +127,23 @@ class RuttuApp:
         
         if is_speech:
             self.last_speech_time = time.time()
-            if not self.is_connected:
-                # Store audio while connecting
+            if not self.is_connected and not self.transcriber:
                 self.pending_audio.append(in_data)
-                # Only start connection thread once
                 if len(self.pending_audio) == 1:
                     threading.Thread(target=self.start_transcriber, daemon=True).start()
-            
-            if self.is_connected and self.transcriber:
+            elif self.is_connected and self.transcriber:
                 self.transcriber.send_audio(in_data)
         else:
-            # Still record to pre-roll if not speaking
             self.pre_roll.append(in_data)
             
-            # Handle timeout
             if self.is_connected and (time.time() - self.last_speech_time > self.connection_timeout):
                 self.stop_transcriber()
                 
         return (None, pyaudio.paContinue)
 
     def toggle_dictation(self):
-        if not self.config.get("api_key"):
+        engine = self.config.get("transcription_engine", "deepgram")
+        if engine == "deepgram" and not self.config.get("api_key"):
             print("[ERROR] No API Key set in settings!")
             self.on_settings()
             return
@@ -143,14 +152,14 @@ class RuttuApp:
         self.update_icon()
         
         if self.recording_active:
-            print("[INFO] App active. VAD monitoring started (Status: YELLOW).")
+            print("[INFO] App active. VAD monitoring started.")
             if not self.vad:
                 self.vad = SileroVAD()
             self.audio.start(self.audio_callback)
         else:
             self.audio.stop()
             self.stop_transcriber()
-            print("[INFO] Dictation fully stopped (Status: GRAY)")
+            print("[INFO] Dictation stopped.")
 
     def on_exit(self):
         self.audio.stop()
@@ -163,14 +172,11 @@ class RuttuApp:
         def inner():
             self.config.set("language", lang)
             print(f"[INFO] Language changed to: {lang}")
-            # If we are currently connected, we might want to restart to apply immediately
             if self.is_connected:
                 self.stop_transcriber()
-                # Transcriber will restart on next speech detection with new lang
         return inner
 
     def run(self):
-        # Create Language Submenu
         lang_menu = pystray.Menu(
             pystray.MenuItem("🇪🇪 Estonian", self.set_language("ee"), 
                              checked=lambda item: self.config.get("language") == "ee", radio=True),
